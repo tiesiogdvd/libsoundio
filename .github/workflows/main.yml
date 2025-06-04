@@ -17,31 +17,34 @@ jobs:
         arch: [x86_64, arm64]
     steps:
     - uses: actions/checkout@v4
+      with:
+        submodules: recursive
     
     - name: Install dependencies
       run: |
         brew update
-        brew install cmake
+        brew install cmake ninja
     
     - name: Configure CMake
       run: |
         mkdir build-${{ matrix.arch }}
         cd build-${{ matrix.arch }}
         cmake .. \
+          -G Ninja \
           -DCMAKE_BUILD_TYPE=Release \
           -DBUILD_SHARED_LIBS=OFF \
-          -DSOUNDIO_STATIC_LIBRARY=ON \
           -DBUILD_EXAMPLE_PROGRAMS=OFF \
           -DBUILD_TESTS=OFF \
           -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} \
-          -DCMAKE_C_STANDARD=11 \
-          -DCMAKE_INSTALL_PREFIX=install
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=10.13 \
+          -DCMAKE_INSTALL_PREFIX=install \
+          -DCMAKE_POSITION_INDEPENDENT_CODE=ON
     
     - name: Build
       run: |
         cd build-${{ matrix.arch }}
-        make -j$(sysctl -n hw.ncpu)
-        make install
+        ninja
+        ninja install
     
     - name: Package artifacts
       run: |
@@ -62,10 +65,14 @@ jobs:
         include:
         - arch: x64
           cmake_arch: x64
+          vcpkg_triplet: x64-windows-static
         - arch: x86
           cmake_arch: Win32
+          vcpkg_triplet: x86-windows-static
     steps:
     - uses: actions/checkout@v4
+      with:
+        submodules: recursive
     
     - name: Add MSBuild to PATH
       uses: microsoft/setup-msbuild@v2
@@ -78,20 +85,25 @@ jobs:
           -A ${{ matrix.cmake_arch }} `
           -DCMAKE_BUILD_TYPE=Release `
           -DBUILD_SHARED_LIBS=OFF `
-          -DSOUNDIO_STATIC_LIBRARY=ON `
           -DBUILD_EXAMPLE_PROGRAMS=OFF `
           -DBUILD_TESTS=OFF `
           -DCMAKE_INSTALL_PREFIX=install `
-          -DCMAKE_C_STANDARD=11 `
-          -DCMAKE_C_FLAGS="/experimental:c11atomics /std:c11" `
-          -DCMAKE_CXX_FLAGS="/experimental:c11atomics" `
-          -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+          -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
+          -DCMAKE_POLICY_DEFAULT_CMP0091=NEW `
+          -DCMAKE_C_FLAGS_RELEASE="/MT /O2 /Ob2 /DNDEBUG" `
+          -DCMAKE_CXX_FLAGS_RELEASE="/MT /O2 /Ob2 /DNDEBUG"
     
     - name: Build
       run: |
         cd build-${{ matrix.arch }}
         cmake --build . --config Release --parallel
         cmake --install . --config Release
+    
+    - name: Verify static library
+      run: |
+        cd build-${{ matrix.arch }}/install
+        Get-ChildItem -Recurse -Filter "*.lib"
+        Get-ChildItem -Recurse -Filter "*.dll"
     
     - name: Package artifacts
       run: |
@@ -113,24 +125,38 @@ jobs:
         - arch: x86_64
           cc: gcc
           cxx: g++
+          cmake_system_processor: x86_64
         - arch: aarch64
           cc: aarch64-linux-gnu-gcc
           cxx: aarch64-linux-gnu-g++
+          cmake_system_processor: aarch64
     steps:
     - uses: actions/checkout@v4
+      with:
+        submodules: recursive
     
     - name: Install dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y \
           cmake \
+          ninja-build \
           libasound2-dev \
           libpulse-dev \
-          libjack-jackd2-dev
+          libjack-jackd2-dev \
+          pkg-config
         
         # Install cross-compilation tools for aarch64
         if [ "${{ matrix.arch }}" = "aarch64" ]; then
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu \
+            libasound2-dev:arm64 \
+            libpulse-dev:arm64
+          
+          # Add arm64 architecture for cross-compilation
+          sudo dpkg --add-architecture arm64
+          sudo apt-get update
         fi
     
     - name: Configure CMake
@@ -138,36 +164,47 @@ jobs:
         mkdir build-${{ matrix.arch }}
         cd build-${{ matrix.arch }}
         
-        # Set up cross-compilation for aarch64
         if [ "${{ matrix.arch }}" = "aarch64" ]; then
+          # Cross-compilation for aarch64
           cmake .. \
+            -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_SHARED_LIBS=OFF \
-            -DSOUNDIO_STATIC_LIBRARY=ON \
             -DBUILD_EXAMPLE_PROGRAMS=OFF \
             -DBUILD_TESTS=OFF \
             -DCMAKE_INSTALL_PREFIX=install \
-            -DCMAKE_C_STANDARD=11 \
             -DCMAKE_C_COMPILER=${{ matrix.cc }} \
             -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} \
             -DCMAKE_SYSTEM_NAME=Linux \
-            -DCMAKE_SYSTEM_PROCESSOR=aarch64
+            -DCMAKE_SYSTEM_PROCESSOR=${{ matrix.cmake_system_processor }} \
+            -DCMAKE_FIND_ROOT_PATH=/usr/aarch64-linux-gnu \
+            -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
+            -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY \
+            -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON
         else
+          # Native x86_64 build
           cmake .. \
+            -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_SHARED_LIBS=OFF \
-            -DSOUNDIO_STATIC_LIBRARY=ON \
             -DBUILD_EXAMPLE_PROGRAMS=OFF \
             -DBUILD_TESTS=OFF \
             -DCMAKE_INSTALL_PREFIX=install \
-            -DCMAKE_C_STANDARD=11
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON
         fi
     
     - name: Build
       run: |
         cd build-${{ matrix.arch }}
-        make -j$(nproc)
-        make install
+        ninja
+        ninja install
+    
+    - name: Verify static library
+      run: |
+        cd build-${{ matrix.arch }}/install
+        find . -name "*.a" -ls
+        find . -name "*.so*" -ls || true
     
     - name: Package artifacts
       run: |
@@ -190,9 +227,15 @@ jobs:
       with:
         path: artifacts
     
+    - name: List artifacts
+      run: |
+        find artifacts -type f -name "*.tar.gz" -o -name "*.zip" | sort
+    
     - name: Upload release assets
       uses: softprops/action-gh-release@v1
       with:
-        files: artifacts/**/*
+        files: |
+          artifacts/**/*.tar.gz
+          artifacts/**/*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
