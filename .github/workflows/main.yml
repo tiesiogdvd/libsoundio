@@ -65,10 +65,8 @@ jobs:
         include:
         - arch: x64
           cmake_arch: x64
-          vcpkg_triplet: x64-windows-static
         - arch: x86
           cmake_arch: Win32
-          vcpkg_triplet: x86-windows-static
     steps:
     - uses: actions/checkout@v4
       with:
@@ -90,20 +88,45 @@ jobs:
           -DCMAKE_INSTALL_PREFIX=install `
           -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
           -DCMAKE_POLICY_DEFAULT_CMP0091=NEW `
-          -DCMAKE_C_FLAGS_RELEASE="/MT /O2 /Ob2 /DNDEBUG" `
-          -DCMAKE_CXX_FLAGS_RELEASE="/MT /O2 /Ob2 /DNDEBUG"
+          -DCMAKE_C_STANDARD=11 `
+          -DCMAKE_C_STANDARD_REQUIRED=ON `
+          -DCMAKE_C_FLAGS="/std:c11 /experimental:c11atomics /MT" `
+          -DCMAKE_C_FLAGS_RELEASE="/std:c11 /experimental:c11atomics /MT /O2 /Ob2 /DNDEBUG" `
+          -DCMAKE_CXX_FLAGS="/std:c++11 /experimental:c11atomics /MT" `
+          -DCMAKE_CXX_FLAGS_RELEASE="/std:c++11 /experimental:c11atomics /MT /O2 /Ob2 /DNDEBUG"
     
     - name: Build
       run: |
         cd build-${{ matrix.arch }}
-        cmake --build . --config Release --parallel
-        cmake --install . --config Release
+        cmake --build . --config Release --parallel --verbose
+    
+    - name: Manual install (skip DLL)
+      run: |
+        cd build-${{ matrix.arch }}
+        
+        # Create install directories
+        New-Item -ItemType Directory -Force -Path "install/lib"
+        New-Item -ItemType Directory -Force -Path "install/include"
+        
+        # Copy static library
+        Copy-Item "Release/soundio.lib" -Destination "install/lib/" -ErrorAction SilentlyContinue
+        Copy-Item "Release/libsoundio_static.lib" -Destination "install/lib/" -ErrorAction SilentlyContinue
+        Copy-Item "soundio.lib" -Destination "install/lib/" -ErrorAction SilentlyContinue
+        Copy-Item "libsoundio_static.lib" -Destination "install/lib/" -ErrorAction SilentlyContinue
+        
+        # Copy headers
+        Copy-Item "../soundio/*.h" -Destination "install/include/" -Recurse -Force
+        
+        # List what we have
+        Get-ChildItem "install" -Recurse
     
     - name: Verify static library
       run: |
         cd build-${{ matrix.arch }}/install
+        Write-Host "=== Library files ==="
         Get-ChildItem -Recurse -Filter "*.lib"
-        Get-ChildItem -Recurse -Filter "*.dll"
+        Write-Host "=== DLL files (should be none) ==="
+        Get-ChildItem -Recurse -Filter "*.dll" -ErrorAction SilentlyContinue
     
     - name: Package artifacts
       run: |
@@ -151,12 +174,7 @@ jobs:
           sudo apt-get install -y \
             gcc-aarch64-linux-gnu \
             g++-aarch64-linux-gnu \
-            libasound2-dev:arm64 \
-            libpulse-dev:arm64
-          
-          # Add arm64 architecture for cross-compilation
-          sudo dpkg --add-architecture arm64
-          sudo apt-get update
+            libc6-dev-arm64-cross
         fi
     
     - name: Configure CMake
@@ -181,7 +199,8 @@ jobs:
             -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
             -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY \
             -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY \
-            -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_C_STANDARD=11
         else
           # Native x86_64 build
           cmake .. \
@@ -191,7 +210,8 @@ jobs:
             -DBUILD_EXAMPLE_PROGRAMS=OFF \
             -DBUILD_TESTS=OFF \
             -DCMAKE_INSTALL_PREFIX=install \
-            -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_C_STANDARD=11
         fi
     
     - name: Build
@@ -203,8 +223,10 @@ jobs:
     - name: Verify static library
       run: |
         cd build-${{ matrix.arch }}/install
+        echo "=== Static libraries ==="
         find . -name "*.a" -ls
-        find . -name "*.so*" -ls || true
+        echo "=== Shared libraries (should be none) ==="
+        find . -name "*.so*" -ls || echo "Good - no shared libraries found"
     
     - name: Package artifacts
       run: |
