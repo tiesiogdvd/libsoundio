@@ -26,9 +26,15 @@ jobs:
       run: |
         mkdir build
         cd build
-        cmake .. -A ${{ matrix.cmake_arch }} -DCMAKE_BUILD_TYPE=Release -DBUILD_STATIC_LIBS=ON -DBUILD_DYNAMIC_LIBS=OFF -DBUILD_EXAMPLE_PROGRAMS=OFF -DBUILD_TESTS=OFF -DCMAKE_INSTALL_PREFIX=install
+        cmake .. -A ${{ matrix.cmake_arch }} -DCMAKE_BUILD_TYPE=Release -DBUILD_STATIC_LIBS=ON -DBUILD_DYNAMIC_LIBS=OFF -DBUILD_EXAMPLE_PROGRAMS=OFF -DBUILD_TESTS=OFF -DCMAKE_INSTALL_PREFIX=install -DCMAKE_C_FLAGS="/std:c11 /experimental:c11atomics" -DCMAKE_CXX_FLAGS="/std:c++11 /experimental:c11atomics"
         cmake --build . --config Release
-        cmake --install . --config Release
+        
+        # Manual install since CMake install is broken
+        New-Item -ItemType Directory -Force -Path "install/lib"
+        New-Item -ItemType Directory -Force -Path "install/include"
+        Copy-Item "Release/soundio.lib" -Destination "install/lib/" -ErrorAction SilentlyContinue
+        Copy-Item "libsoundio_static.lib" -Destination "install/lib/" -ErrorAction SilentlyContinue
+        Copy-Item "../soundio/*.h" -Destination "install/include/" -Recurse -Force
 
     - name: Package
       run: |
