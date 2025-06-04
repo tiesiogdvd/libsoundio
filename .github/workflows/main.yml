@@ -1,170 +1,225 @@
-name: Build Static libsoundio
+name: Build libsoundio Static Libraries
 
 on:
   push:
+    branches: [ main, master ]
   pull_request:
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
-  build-windows:
-    runs-on: windows-latest
-    strategy:
-      matrix:
-        toolchain: [msvc, mingw]
-        arch: [x64, x86]
-        include:
-        - toolchain: msvc
-          arch: x64
-          cmake_arch: x64
-        - toolchain: msvc
-          arch: x86
-          cmake_arch: Win32
-        - toolchain: mingw
-          arch: x64
-          mingw_arch: x86_64
-        - toolchain: mingw
-          arch: x86
-          mingw_arch: i686
-        exclude:
-        - toolchain: mingw
-          arch: x86  # Skip 32-bit MinGW for simplicity
-    steps:
-    - uses: actions/checkout@v4
-      with:
-        repository: andrewrk/libsoundio
-        ref: master
-
-    - name: Fix CMake version and WASAPI
-      run: |
-        # Fix CMake version
-        (Get-Content CMakeLists.txt) -replace 'cmake_minimum_required\(VERSION 2\.8\.5\)', 'cmake_minimum_required(VERSION 3.15)' | Set-Content CMakeLists.txt
-        
-        # Fix WASAPI GUID redefinitions by commenting them out
-        $wasapi = Get-Content src/wasapi.c
-        $wasapi = $wasapi -replace '^static const CLSID CLSID_MMDeviceEnumerator.*', '// $&'
-        $wasapi = $wasapi -replace '^static const IID\s+IID_.*', '// $&'
-        $wasapi = $wasapi -replace '^\s*0x[0-9a-fA-F,x\s{}]+;$', '// $&'
-        $wasapi | Set-Content src/wasapi.c
-
-    - name: Setup MinGW
-      if: matrix.toolchain == 'mingw'
-      uses: msys2/setup-msys2@v2
-      with:
-        msystem: MINGW64
-        update: true
-        install: >-
-          mingw-w64-${{ matrix.mingw_arch }}-toolchain
-          mingw-w64-${{ matrix.mingw_arch }}-cmake
-
-    - name: Build MSVC
-      if: matrix.toolchain == 'msvc'
-      run: |
-        mkdir build
-        cd build
-        cmake .. -A ${{ matrix.cmake_arch }} -DCMAKE_BUILD_TYPE=Release -DBUILD_STATIC_LIBS=ON -DBUILD_DYNAMIC_LIBS=OFF -DBUILD_EXAMPLE_PROGRAMS=OFF -DBUILD_TESTS=OFF -DCMAKE_INSTALL_PREFIX=install -DCMAKE_C_FLAGS="/std:c11 /experimental:c11atomics"
-        cmake --build . --config Release
-        New-Item -ItemType Directory -Force -Path "install/lib"
-        New-Item -ItemType Directory -Force -Path "install/include"
-        Copy-Item "Release/soundio.lib" -Destination "install/lib/" -ErrorAction SilentlyContinue
-        Copy-Item "../soundio/*.h" -Destination "install/include/" -Recurse -Force
-
-    - name: Build MinGW
-      if: matrix.toolchain == 'mingw'
-      shell: msys2 {0}
-      run: |
-        mkdir build
-        cd build
-        cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_STATIC_LIBS=ON -DBUILD_DYNAMIC_LIBS=OFF -DBUILD_EXAMPLE_PROGRAMS=OFF -DBUILD_TESTS=OFF -DCMAKE_INSTALL_PREFIX=install
-        ninja
-        ninja install
-
-    - name: Package
-      run: |
-        cd build/install
-        7z a ../../libsoundio-windows-${{ matrix.arch }}-${{ matrix.toolchain }}.zip *
-
-    - name: Upload
-      uses: actions/upload-artifact@v4
-      with:
-        name: libsoundio-windows-${{ matrix.arch }}-${{ matrix.toolchain }}
-        path: libsoundio-windows-${{ matrix.arch }}-${{ matrix.toolchain }}.zip
-
   build-linux:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        arch: [x86_64, aarch64]
+        arch: [x64, arm64]
+    
     steps:
     - uses: actions/checkout@v4
       with:
         repository: andrewrk/libsoundio
         ref: master
-
-    - name: Fix CMake version
-      run: |
-        sed -i 's/cmake_minimum_required(VERSION 2\.8\.5)/cmake_minimum_required(VERSION 3.15)/' CMakeLists.txt
-
-    - name: Install deps
+    
+    - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y cmake libasound2-dev libpulse-dev libjack-jackd2-dev
-        if [ "${{ matrix.arch }}" = "aarch64" ]; then
+        sudo apt-get install -y cmake build-essential libasound2-dev libpulse-dev libjack-jackd2-dev
+        if [ "${{ matrix.arch }}" = "arm64" ]; then
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
         fi
-
-    - name: Configure and Build
+    
+    - name: Configure CMake
       run: |
-        mkdir build
-        cd build
-        if [ "${{ matrix.arch }}" = "aarch64" ]; then
-          cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_STATIC_LIBS=ON -DBUILD_DYNAMIC_LIBS=OFF -DBUILD_EXAMPLE_PROGRAMS=OFF -DBUILD_TESTS=OFF -DCMAKE_INSTALL_PREFIX=install -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++
+        mkdir build && cd build
+        if [ "${{ matrix.arch }}" = "arm64" ]; then
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_DYNAMIC_LIBS=OFF \
+            -DBUILD_STATIC_LIBS=ON \
+            -DBUILD_EXAMPLE_PROGRAMS=OFF \
+            -DBUILD_TESTS=OFF \
+            -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
+            -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
+            -DCMAKE_SYSTEM_NAME=Linux \
+            -DCMAKE_SYSTEM_PROCESSOR=aarch64
         else
-          cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_STATIC_LIBS=ON -DBUILD_DYNAMIC_LIBS=OFF -DBUILD_EXAMPLE_PROGRAMS=OFF -DBUILD_TESTS=OFF -DCMAKE_INSTALL_PREFIX=install
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_DYNAMIC_LIBS=OFF \
+            -DBUILD_STATIC_LIBS=ON \
+            -DBUILD_EXAMPLE_PROGRAMS=OFF \
+            -DBUILD_TESTS=OFF
         fi
-        make -j$(nproc)
-        make install
-
-    - name: Package
+    
+    - name: Build
       run: |
-        cd build/install
-        tar -czf ../../libsoundio-linux-${{ matrix.arch }}.tar.gz .
-
-    - name: Upload
+        cd build
+        make -j$(nproc)
+    
+    - name: Create single static library
+      run: |
+        cd build
+        # Extract all object files from the static library
+        mkdir temp_extract
+        cd temp_extract
+        ar x ../libsoundio_static.a
+        # Create new archive with all objects
+        ar rcs ../libsoundio-linux-${{ matrix.arch }}.a *.o
+        cd ..
+        rm -rf temp_extract
+    
+    - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
         name: libsoundio-linux-${{ matrix.arch }}
-        path: libsoundio-linux-${{ matrix.arch }}.tar.gz
+        path: build/libsoundio-linux-${{ matrix.arch }}.a
 
   build-macos:
     runs-on: macos-latest
     strategy:
       matrix:
-        arch: [x86_64, arm64]
+        arch: [x64, arm64]
+    
     steps:
     - uses: actions/checkout@v4
       with:
         repository: andrewrk/libsoundio
         ref: master
-
-    - name: Fix CMake version
+    
+    - name: Install dependencies
       run: |
-        sed -i '' 's/cmake_minimum_required(VERSION 2\.8\.5)/cmake_minimum_required(VERSION 3.15)/' CMakeLists.txt
-
-    - name: Configure and Build
+        brew install cmake
+    
+    - name: Configure CMake
       run: |
-        mkdir build
+        mkdir build && cd build
+        if [ "${{ matrix.arch }}" = "arm64" ]; then
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_DYNAMIC_LIBS=OFF \
+            -DBUILD_STATIC_LIBS=ON \
+            -DBUILD_EXAMPLE_PROGRAMS=OFF \
+            -DBUILD_TESTS=OFF \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+        else
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_DYNAMIC_LIBS=OFF \
+            -DBUILD_STATIC_LIBS=ON \
+            -DBUILD_EXAMPLE_PROGRAMS=OFF \
+            -DBUILD_TESTS=OFF \
+            -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=10.15
+        fi
+    
+    - name: Build
+      run: |
         cd build
-        cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_STATIC_LIBS=ON -DBUILD_DYNAMIC_LIBS=OFF -DBUILD_EXAMPLE_PROGRAMS=OFF -DBUILD_TESTS=OFF -DCMAKE_INSTALL_PREFIX=install -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }}
         make -j$(sysctl -n hw.ncpu)
-        make install
-
-    - name: Package
+    
+    - name: Create single static library
       run: |
-        cd build/install
-        tar -czf ../../libsoundio-macos-${{ matrix.arch }}.tar.gz .
-
-    - name: Upload
+        cd build
+        # For macOS, we can use libtool to create a single archive
+        mkdir temp_extract
+        cd temp_extract
+        ar x ../libsoundio_static.a
+        libtool -static -o ../libsoundio-macos-${{ matrix.arch }}.a *.o
+        cd ..
+        rm -rf temp_extract
+    
+    - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
         name: libsoundio-macos-${{ matrix.arch }}
-        path: libsoundio-macos-${{ matrix.arch }}.tar.gz
+        path: build/libsoundio-macos-${{ matrix.arch }}.a
+
+  build-windows:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        arch: [x64, x86]
+    
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: andrewrk/libsoundio
+        ref: master
+    
+    - name: Setup MSVC
+      uses: microsoft/setup-msbuild@v2
+    
+    - name: Configure CMake
+      run: |
+        mkdir build
+        cd build
+        if ("${{ matrix.arch }}" -eq "x86") {
+          cmake .. `
+            -G "Visual Studio 17 2022" -A Win32 `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DBUILD_DYNAMIC_LIBS=OFF `
+            -DBUILD_STATIC_LIBS=ON `
+            -DBUILD_EXAMPLE_PROGRAMS=OFF `
+            -DBUILD_TESTS=OFF `
+            -DCMAKE_C_FLAGS="/TP" `
+            -DCMAKE_CXX_FLAGS="/TP"
+        } else {
+          cmake .. `
+            -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DBUILD_DYNAMIC_LIBS=OFF `
+            -DBUILD_STATIC_LIBS=ON `
+            -DBUILD_EXAMPLE_PROGRAMS=OFF `
+            -DBUILD_TESTS=OFF `
+            -DCMAKE_C_FLAGS="/TP" `
+            -DCMAKE_CXX_FLAGS="/TP"
+        }
+    
+    - name: Build
+      run: |
+        cd build
+        msbuild libsoundio.sln /p:Configuration=Release /p:Platform=${{ matrix.arch == 'x86' && 'Win32' || 'x64' }} /m
+    
+    - name: Create single static library
+      run: |
+        cd build
+        # For Windows, rename the output to .a format for consistency
+        if ("${{ matrix.arch }}" -eq "x86") {
+          copy "Release\soundio_static.lib" "libsoundio-windows-x86.a"
+        } else {
+          copy "Release\soundio_static.lib" "libsoundio-windows-x64.a"
+        }
+    
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: libsoundio-windows-${{ matrix.arch }}
+        path: build/libsoundio-windows-${{ matrix.arch }}.a
+
+  package-release:
+    needs: [build-linux, build-macos, build-windows]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+    
+    - name: Create release package
+      run: |
+        mkdir release
+        find artifacts -name "*.a" -exec cp {} release/ \;
+        ls -la release/
+        
+        # Create a simple header package
+        curl -L https://raw.githubusercontent.com/andrewrk/libsoundio/master/soundio/soundio.h \
+          -o release/soundio.h
+    
+    - name: Upload release artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: libsoundio-static-all-platforms
+        path: release/
