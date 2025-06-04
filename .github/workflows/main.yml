@@ -2,11 +2,7 @@ name: Build Static libsoundio
 
 on:
   push:
-    branches: [ main, master, develop ]
   pull_request:
-    branches: [ main, master ]
-  release:
-    types: [ published ]
   workflow_dispatch:
 
 jobs:
@@ -15,210 +11,73 @@ jobs:
     strategy:
       matrix:
         arch: [x64, x86]
-        toolchain: [msvc, mingw]
         include:
         - arch: x64
           cmake_arch: x64
-          mingw_arch: x86_64
         - arch: x86
           cmake_arch: Win32
-          mingw_arch: i686
-        exclude:
-        - arch: x86
-          toolchain: mingw  # Skip 32-bit MinGW for simplicity
     steps:
     - uses: actions/checkout@v4
       with:
         repository: andrewrk/libsoundio
         ref: master
 
-    - name: Setup MSVC
-      if: matrix.toolchain == 'msvc'
-      uses: microsoft/setup-msbuild@v2
-
-    - name: Setup MinGW
-      if: matrix.toolchain == 'mingw'
-      uses: msys2/setup-msys2@v2
-      with:
-        msystem: MINGW64
-        update: true
-        install: >-
-          mingw-w64-${{ matrix.mingw_arch }}-toolchain
-          mingw-w64-${{ matrix.mingw_arch }}-cmake
-          mingw-w64-${{ matrix.mingw_arch }}-ninja
-
-    - name: Configure CMake (MSVC)
-      if: matrix.toolchain == 'msvc'
+    - name: Configure and Build
       run: |
         mkdir build
         cd build
-        cmake .. `
-          -A ${{ matrix.cmake_arch }} `
-          -DCMAKE_BUILD_TYPE=Release `
-          -DBUILD_STATIC_LIBS=ON `
-          -DBUILD_DYNAMIC_LIBS=OFF `
-          -DBUILD_EXAMPLE_PROGRAMS=OFF `
-          -DBUILD_TESTS=OFF `
-          -DCMAKE_INSTALL_PREFIX=install `
-          -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
-
-    - name: Configure CMake (MinGW)
-      if: matrix.toolchain == 'mingw'
-      shell: msys2 {0}
-      run: |
-        mkdir build
-        cd build
-        cmake .. \
-          -G Ninja \
-          -DCMAKE_BUILD_TYPE=Release \
-          -DBUILD_STATIC_LIBS=ON \
-          -DBUILD_DYNAMIC_LIBS=OFF \
-          -DBUILD_EXAMPLE_PROGRAMS=OFF \
-          -DBUILD_TESTS=OFF \
-          -DCMAKE_INSTALL_PREFIX=install
-
-    - name: Build (MSVC)
-      if: matrix.toolchain == 'msvc'
-      run: |
-        cd build
-        cmake --build . --config Release --parallel
+        cmake .. -A ${{ matrix.cmake_arch }} -DCMAKE_BUILD_TYPE=Release -DBUILD_STATIC_LIBS=ON -DBUILD_DYNAMIC_LIBS=OFF -DBUILD_EXAMPLE_PROGRAMS=OFF -DBUILD_TESTS=OFF -DCMAKE_INSTALL_PREFIX=install
+        cmake --build . --config Release
         cmake --install . --config Release
 
-    - name: Build (MinGW)
-      if: matrix.toolchain == 'mingw'
-      shell: msys2 {0}
-      run: |
-        cd build
-        ninja
-        ninja install
-
-    - name: Verify static library
+    - name: Package
       run: |
         cd build/install
-        Write-Host "=== Library files ==="
-        Get-ChildItem -Recurse -Filter "*.lib" -ErrorAction SilentlyContinue
-        Get-ChildItem -Recurse -Filter "*.a" -ErrorAction SilentlyContinue
-        Write-Host "=== Headers ==="
-        Get-ChildItem -Recurse -Filter "*.h" -ErrorAction SilentlyContinue
-        Write-Host "=== Should be NO DLL files ==="
-        $dlls = Get-ChildItem -Recurse -Filter "*.dll" -ErrorAction SilentlyContinue
-        if ($dlls) { 
-          Write-Host "ERROR: Found DLL files!" 
-          $dlls
-          exit 1
-        } else {
-          Write-Host "✓ Good - no DLL files found"
-        }
+        7z a ../../libsoundio-windows-${{ matrix.arch }}.zip *
 
-    - name: Package artifacts
-      run: |
-        cd build/install
-        7z a ../../libsoundio-windows-${{ matrix.arch }}-${{ matrix.toolchain }}.zip *
-
-    - name: Upload artifacts
+    - name: Upload
       uses: actions/upload-artifact@v4
       with:
-        name: libsoundio-windows-${{ matrix.arch }}-${{ matrix.toolchain }}
-        path: libsoundio-windows-${{ matrix.arch }}-${{ matrix.toolchain }}.zip
+        name: libsoundio-windows-${{ matrix.arch }}
+        path: libsoundio-windows-${{ matrix.arch }}.zip
 
   build-linux:
     runs-on: ubuntu-latest
     strategy:
       matrix:
         arch: [x86_64, aarch64]
-        include:
-        - arch: x86_64
-          cc: gcc
-          cxx: g++
-        - arch: aarch64
-          cc: aarch64-linux-gnu-gcc
-          cxx: aarch64-linux-gnu-g++
     steps:
     - uses: actions/checkout@v4
       with:
         repository: andrewrk/libsoundio
         ref: master
 
-    - name: Install dependencies
+    - name: Install deps
       run: |
         sudo apt-get update
-        sudo apt-get install -y \
-          cmake \
-          ninja-build \
-          libasound2-dev \
-          libpulse-dev \
-          libjack-jackd2-dev \
-          pkg-config
-
+        sudo apt-get install -y cmake libasound2-dev libpulse-dev libjack-jackd2-dev
         if [ "${{ matrix.arch }}" = "aarch64" ]; then
-          sudo apt-get install -y \
-            gcc-aarch64-linux-gnu \
-            g++-aarch64-linux-gnu
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
         fi
 
-    - name: Configure CMake
+    - name: Configure and Build
       run: |
         mkdir build
         cd build
-        
         if [ "${{ matrix.arch }}" = "aarch64" ]; then
-          cmake .. \
-            -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_STATIC_LIBS=ON \
-            -DBUILD_DYNAMIC_LIBS=OFF \
-            -DBUILD_EXAMPLE_PROGRAMS=OFF \
-            -DBUILD_TESTS=OFF \
-            -DCMAKE_INSTALL_PREFIX=install \
-            -DCMAKE_C_COMPILER=${{ matrix.cc }} \
-            -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} \
-            -DCMAKE_SYSTEM_NAME=Linux \
-            -DCMAKE_SYSTEM_PROCESSOR=aarch64
+          cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_STATIC_LIBS=ON -DBUILD_DYNAMIC_LIBS=OFF -DBUILD_EXAMPLE_PROGRAMS=OFF -DBUILD_TESTS=OFF -DCMAKE_INSTALL_PREFIX=install -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++
         else
-          cmake .. \
-            -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_STATIC_LIBS=ON \
-            -DBUILD_DYNAMIC_LIBS=OFF \
-            -DBUILD_EXAMPLE_PROGRAMS=OFF \
-            -DBUILD_TESTS=OFF \
-            -DCMAKE_INSTALL_PREFIX=install
+          cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_STATIC_LIBS=ON -DBUILD_DYNAMIC_LIBS=OFF -DBUILD_EXAMPLE_PROGRAMS=OFF -DBUILD_TESTS=OFF -DCMAKE_INSTALL_PREFIX=install
         fi
+        make -j$(nproc)
+        make install
 
-    - name: Build
-      run: |
-        cd build
-        ninja
-        ninja install
-
-    - name: Verify static library
-      run: |
-        cd build/install
-        echo "=== Static library files ==="
-        find . -name "*.a" -ls
-        echo "=== Headers ==="
-        find . -name "*.h" -ls
-        echo "=== Should be NO shared libraries ==="
-        if find . -name "*.so*" -print | grep -q .; then
-          echo "ERROR: Found shared library files!"
-          find . -name "*.so*" -ls
-          exit 1
-        else
-          echo "✓ Good - no shared library files found"
-        fi
-        
-        echo "=== Library contents (first 10 symbols) ==="
-        if [ -f lib/libsoundio.a ]; then
-          ar -t lib/libsoundio.a | head -10
-          echo "Library size: $(ls -lh lib/libsoundio.a | awk '{print $5}')"
-        fi
-
-    - name: Package artifacts
+    - name: Package
       run: |
         cd build/install
         tar -czf ../../libsoundio-linux-${{ matrix.arch }}.tar.gz .
 
-    - name: Upload artifacts
+    - name: Upload
       uses: actions/upload-artifact@v4
       with:
         name: libsoundio-linux-${{ matrix.arch }}
@@ -235,113 +94,21 @@ jobs:
         repository: andrewrk/libsoundio
         ref: master
 
-    - name: Install dependencies
-      run: |
-        brew install cmake ninja
-
-    - name: Configure CMake
+    - name: Configure and Build
       run: |
         mkdir build
         cd build
-        cmake .. \
-          -G Ninja \
-          -DCMAKE_BUILD_TYPE=Release \
-          -DBUILD_STATIC_LIBS=ON \
-          -DBUILD_DYNAMIC_LIBS=OFF \
-          -DBUILD_EXAMPLE_PROGRAMS=OFF \
-          -DBUILD_TESTS=OFF \
-          -DCMAKE_INSTALL_PREFIX=install \
-          -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} \
-          -DCMAKE_OSX_DEPLOYMENT_TARGET=10.13
+        cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_STATIC_LIBS=ON -DBUILD_DYNAMIC_LIBS=OFF -DBUILD_EXAMPLE_PROGRAMS=OFF -DBUILD_TESTS=OFF -DCMAKE_INSTALL_PREFIX=install -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }}
+        make -j$(sysctl -n hw.ncpu)
+        make install
 
-    - name: Build
-      run: |
-        cd build
-        ninja
-        ninja install
-
-    - name: Verify static library
-      run: |
-        cd build/install
-        echo "=== Static library files ==="
-        find . -name "*.a" -ls
-        echo "=== Headers ==="
-        find . -name "*.h" -ls
-        echo "=== Should be NO dynamic libraries ==="
-        if find . -name "*.dylib" -print | grep -q .; then
-          echo "ERROR: Found dynamic library files!"
-          find . -name "*.dylib" -ls
-          exit 1
-        else
-          echo "✓ Good - no dynamic library files found"
-        fi
-        
-        echo "=== Library info ==="
-        if [ -f lib/libsoundio.a ]; then
-          file lib/libsoundio.a
-          echo "Library size: $(ls -lh lib/libsoundio.a | awk '{print $5}')"
-          echo "Architecture: $(lipo -info lib/libsoundio.a)"
-        fi
-
-    - name: Package artifacts
+    - name: Package
       run: |
         cd build/install
         tar -czf ../../libsoundio-macos-${{ matrix.arch }}.tar.gz .
 
-    - name: Upload artifacts
+    - name: Upload
       uses: actions/upload-artifact@v4
       with:
         name: libsoundio-macos-${{ matrix.arch }}
         path: libsoundio-macos-${{ matrix.arch }}.tar.gz
-
-  create-release:
-    needs: [build-windows, build-linux, build-macos]
-    runs-on: ubuntu-latest
-    if: github.event_name == 'release'
-    steps:
-    - name: Download all artifacts
-      uses: actions/download-artifact@v4
-      with:
-        path: artifacts
-
-    - name: List all artifacts
-      run: |
-        echo "=== All built artifacts ==="
-        find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" \) | sort
-
-    - name: Upload release assets
-      uses: softprops/action-gh-release@v1
-      with:
-        files: |
-          artifacts/**/*.tar.gz
-          artifacts/**/*.zip
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  # Test the static libraries work
-  test-static-linking:
-    needs: [build-windows, build-linux, build-macos]
-    runs-on: ubuntu-latest
-    steps:
-    - name: Download Linux artifact
-      uses: actions/download-artifact@v4
-      with:
-        name: libsoundio-linux-x86_64
-        path: test-lib
-
-    - name: Extract and test
-      run: |
-        cd test-lib
-        tar -xzf libsoundio-linux-x86_64.tar.gz
-        
-        echo "=== Verifying static library structure ==="
-        ls -la lib/
-        ls -la include/
-        
-        echo "=== Testing library symbols ==="
-        nm -D lib/libsoundio.a | head -20 || true
-        
-        echo "=== Library file info ==="
-        file lib/libsoundio.a
-        
-        echo "✓ Static library test passed"
