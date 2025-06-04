@@ -34,6 +34,7 @@ jobs:
           -DBUILD_EXAMPLE_PROGRAMS=OFF \
           -DBUILD_TESTS=OFF \
           -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} \
+          -DCMAKE_C_STANDARD=11 \
           -DCMAKE_INSTALL_PREFIX=install
     
     - name: Build
@@ -61,10 +62,8 @@ jobs:
         include:
         - arch: x64
           cmake_arch: x64
-          vcpkg_triplet: x64-windows-static
         - arch: x86
           cmake_arch: Win32
-          vcpkg_triplet: x86-windows-static
     steps:
     - uses: actions/checkout@v4
     
@@ -83,6 +82,9 @@ jobs:
           -DBUILD_EXAMPLE_PROGRAMS=OFF `
           -DBUILD_TESTS=OFF `
           -DCMAKE_INSTALL_PREFIX=install `
+          -DCMAKE_C_STANDARD=11 `
+          -DCMAKE_C_FLAGS="/experimental:c11atomics /std:c11" `
+          -DCMAKE_CXX_FLAGS="/experimental:c11atomics" `
           -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
     
     - name: Build
@@ -138,8 +140,6 @@ jobs:
         
         # Set up cross-compilation for aarch64
         if [ "${{ matrix.arch }}" = "aarch64" ]; then
-          export CC=${{ matrix.cc }}
-          export CXX=${{ matrix.cxx }}
           cmake .. \
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_SHARED_LIBS=OFF \
@@ -147,6 +147,7 @@ jobs:
             -DBUILD_EXAMPLE_PROGRAMS=OFF \
             -DBUILD_TESTS=OFF \
             -DCMAKE_INSTALL_PREFIX=install \
+            -DCMAKE_C_STANDARD=11 \
             -DCMAKE_C_COMPILER=${{ matrix.cc }} \
             -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} \
             -DCMAKE_SYSTEM_NAME=Linux \
@@ -158,7 +159,8 @@ jobs:
             -DSOUNDIO_STATIC_LIBRARY=ON \
             -DBUILD_EXAMPLE_PROGRAMS=OFF \
             -DBUILD_TESTS=OFF \
-            -DCMAKE_INSTALL_PREFIX=install
+            -DCMAKE_INSTALL_PREFIX=install \
+            -DCMAKE_C_STANDARD=11
         fi
     
     - name: Build
