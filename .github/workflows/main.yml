@@ -10,42 +10,72 @@ jobs:
     runs-on: windows-latest
     strategy:
       matrix:
+        toolchain: [msvc, mingw]
         arch: [x64, x86]
         include:
-        - arch: x64
+        - toolchain: msvc
+          arch: x64
           cmake_arch: x64
-        - arch: x86
+        - toolchain: msvc
+          arch: x86
           cmake_arch: Win32
+        - toolchain: mingw
+          arch: x64
+          mingw_arch: x86_64
+        - toolchain: mingw
+          arch: x86
+          mingw_arch: i686
+        exclude:
+        - toolchain: mingw
+          arch: x86  # Skip 32-bit MinGW for simplicity
     steps:
     - uses: actions/checkout@v4
       with:
         repository: andrewrk/libsoundio
         ref: master
 
-    - name: Configure and Build
+    - name: Setup MinGW
+      if: matrix.toolchain == 'mingw'
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: MINGW64
+        update: true
+        install: >-
+          mingw-w64-${{ matrix.mingw_arch }}-toolchain
+          mingw-w64-${{ matrix.mingw_arch }}-cmake
+
+    - name: Build MSVC
+      if: matrix.toolchain == 'msvc'
       run: |
         mkdir build
         cd build
-        cmake .. -A ${{ matrix.cmake_arch }} -DCMAKE_BUILD_TYPE=Release -DBUILD_STATIC_LIBS=ON -DBUILD_DYNAMIC_LIBS=OFF -DBUILD_EXAMPLE_PROGRAMS=OFF -DBUILD_TESTS=OFF -DCMAKE_INSTALL_PREFIX=install -DCMAKE_C_FLAGS="/std:c11 /experimental:c11atomics" -DCMAKE_CXX_FLAGS="/std:c++11 /experimental:c11atomics"
+        cmake .. -A ${{ matrix.cmake_arch }} -DCMAKE_BUILD_TYPE=Release -DBUILD_STATIC_LIBS=ON -DBUILD_DYNAMIC_LIBS=OFF -DBUILD_EXAMPLE_PROGRAMS=OFF -DBUILD_TESTS=OFF -DCMAKE_INSTALL_PREFIX=install -DCMAKE_C_FLAGS="/std:c11 /experimental:c11atomics"
         cmake --build . --config Release
-        
-        # Manual install since CMake install is broken
         New-Item -ItemType Directory -Force -Path "install/lib"
         New-Item -ItemType Directory -Force -Path "install/include"
         Copy-Item "Release/soundio.lib" -Destination "install/lib/" -ErrorAction SilentlyContinue
-        Copy-Item "libsoundio_static.lib" -Destination "install/lib/" -ErrorAction SilentlyContinue
         Copy-Item "../soundio/*.h" -Destination "install/include/" -Recurse -Force
+
+    - name: Build MinGW
+      if: matrix.toolchain == 'mingw'
+      shell: msys2 {0}
+      run: |
+        mkdir build
+        cd build
+        cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_STATIC_LIBS=ON -DBUILD_DYNAMIC_LIBS=OFF -DBUILD_EXAMPLE_PROGRAMS=OFF -DBUILD_TESTS=OFF -DCMAKE_INSTALL_PREFIX=install
+        make -j$(nproc)
+        make install
 
     - name: Package
       run: |
         cd build/install
-        7z a ../../libsoundio-windows-${{ matrix.arch }}.zip *
+        7z a ../../libsoundio-windows-${{ matrix.arch }}-${{ matrix.toolchain }}.zip *
 
     - name: Upload
       uses: actions/upload-artifact@v4
       with:
-        name: libsoundio-windows-${{ matrix.arch }}
-        path: libsoundio-windows-${{ matrix.arch }}.zip
+        name: libsoundio-windows-${{ matrix.arch }}-${{ matrix.toolchain }}
+        path: libsoundio-windows-${{ matrix.arch }}-${{ matrix.toolchain }}.zip
 
   build-linux:
     runs-on: ubuntu-latest
