@@ -1,0 +1,196 @@
+name: Build Static Libraries
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  release:
+    types: [ published ]
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        arch: [x86_64, arm64]
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install dependencies
+      run: |
+        brew update
+        brew install cmake
+    
+    - name: Configure CMake
+      run: |
+        mkdir build-${{ matrix.arch }}
+        cd build-${{ matrix.arch }}
+        cmake .. \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DBUILD_SHARED_LIBS=OFF \
+          -DSOUNDIO_STATIC_LIBRARY=ON \
+          -DBUILD_EXAMPLE_PROGRAMS=OFF \
+          -DBUILD_TESTS=OFF \
+          -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} \
+          -DCMAKE_INSTALL_PREFIX=install
+    
+    - name: Build
+      run: |
+        cd build-${{ matrix.arch }}
+        make -j$(sysctl -n hw.ncpu)
+        make install
+    
+    - name: Package artifacts
+      run: |
+        cd build-${{ matrix.arch }}/install
+        tar -czf ../../libsoundio-macos-${{ matrix.arch }}.tar.gz .
+    
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: libsoundio-macos-${{ matrix.arch }}
+        path: libsoundio-macos-${{ matrix.arch }}.tar.gz
+
+  build-windows:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        arch: [x64, x86]
+        include:
+        - arch: x64
+          cmake_arch: x64
+          vcpkg_triplet: x64-windows-static
+        - arch: x86
+          cmake_arch: Win32
+          vcpkg_triplet: x86-windows-static
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Add MSBuild to PATH
+      uses: microsoft/setup-msbuild@v2
+    
+    - name: Configure CMake
+      run: |
+        mkdir build-${{ matrix.arch }}
+        cd build-${{ matrix.arch }}
+        cmake .. `
+          -A ${{ matrix.cmake_arch }} `
+          -DCMAKE_BUILD_TYPE=Release `
+          -DBUILD_SHARED_LIBS=OFF `
+          -DSOUNDIO_STATIC_LIBRARY=ON `
+          -DBUILD_EXAMPLE_PROGRAMS=OFF `
+          -DBUILD_TESTS=OFF `
+          -DCMAKE_INSTALL_PREFIX=install `
+          -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+    
+    - name: Build
+      run: |
+        cd build-${{ matrix.arch }}
+        cmake --build . --config Release --parallel
+        cmake --install . --config Release
+    
+    - name: Package artifacts
+      run: |
+        cd build-${{ matrix.arch }}/install
+        7z a ../../libsoundio-windows-${{ matrix.arch }}.zip *
+    
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: libsoundio-windows-${{ matrix.arch }}
+        path: libsoundio-windows-${{ matrix.arch }}.zip
+
+  build-linux:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [x86_64, aarch64]
+        include:
+        - arch: x86_64
+          cc: gcc
+          cxx: g++
+        - arch: aarch64
+          cc: aarch64-linux-gnu-gcc
+          cxx: aarch64-linux-gnu-g++
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          cmake \
+          libasound2-dev \
+          libpulse-dev \
+          libjack-jackd2-dev
+        
+        # Install cross-compilation tools for aarch64
+        if [ "${{ matrix.arch }}" = "aarch64" ]; then
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+        fi
+    
+    - name: Configure CMake
+      run: |
+        mkdir build-${{ matrix.arch }}
+        cd build-${{ matrix.arch }}
+        
+        # Set up cross-compilation for aarch64
+        if [ "${{ matrix.arch }}" = "aarch64" ]; then
+          export CC=${{ matrix.cc }}
+          export CXX=${{ matrix.cxx }}
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DSOUNDIO_STATIC_LIBRARY=ON \
+            -DBUILD_EXAMPLE_PROGRAMS=OFF \
+            -DBUILD_TESTS=OFF \
+            -DCMAKE_INSTALL_PREFIX=install \
+            -DCMAKE_C_COMPILER=${{ matrix.cc }} \
+            -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} \
+            -DCMAKE_SYSTEM_NAME=Linux \
+            -DCMAKE_SYSTEM_PROCESSOR=aarch64
+        else
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DSOUNDIO_STATIC_LIBRARY=ON \
+            -DBUILD_EXAMPLE_PROGRAMS=OFF \
+            -DBUILD_TESTS=OFF \
+            -DCMAKE_INSTALL_PREFIX=install
+        fi
+    
+    - name: Build
+      run: |
+        cd build-${{ matrix.arch }}
+        make -j$(nproc)
+        make install
+    
+    - name: Package artifacts
+      run: |
+        cd build-${{ matrix.arch }}/install
+        tar -czf ../../libsoundio-linux-${{ matrix.arch }}.tar.gz .
+    
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: libsoundio-linux-${{ matrix.arch }}
+        path: libsoundio-linux-${{ matrix.arch }}.tar.gz
+
+  create-release:
+    needs: [build-macos, build-windows, build-linux]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+    
+    - name: Upload release assets
+      uses: softprops/action-gh-release@v1
+      with:
+        files: artifacts/**/*
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
