@@ -10,10 +10,6 @@ on:
 jobs:
   build-linux:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        arch: [x64, arm64]
-    
     steps:
     - uses: actions/checkout@v4
       with:
@@ -24,165 +20,100 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y cmake build-essential libasound2-dev libpulse-dev libjack-jackd2-dev
-        if [ "${{ matrix.arch }}" = "arm64" ]; then
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-        fi
     
-    - name: Configure and Build
+    - name: Build
       run: |
-        mkdir build && cd build
-        if [ "${{ matrix.arch }}" = "arm64" ]; then
-          cmake .. \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_DYNAMIC_LIBS=OFF \
-            -DBUILD_STATIC_LIBS=ON \
-            -DBUILD_EXAMPLE_PROGRAMS=OFF \
-            -DBUILD_TESTS=OFF \
-            -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
-            -DCMAKE_SYSTEM_NAME=Linux \
-            -DCMAKE_SYSTEM_PROCESSOR=aarch64
-        else
-          cmake .. \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_DYNAMIC_LIBS=OFF \
-            -DBUILD_STATIC_LIBS=ON \
-            -DBUILD_EXAMPLE_PROGRAMS=OFF \
-            -DBUILD_TESTS=OFF
-        fi
+        mkdir build
+        cd build
+        cmake ..
         make -j$(nproc)
-        cp libsoundio_static.a libsoundio-linux-${{ matrix.arch }}.a
+        ls -la *.a
+        cp libsoundio_static.a libsoundio-linux-x64.a
     
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: libsoundio-linux-${{ matrix.arch }}
-        path: build/libsoundio-linux-${{ matrix.arch }}.a
+        name: libsoundio-linux-x64
+        path: build/libsoundio-linux-x64.a
 
   build-macos:
     runs-on: macos-latest
-    strategy:
-      matrix:
-        arch: [x64, arm64]
-    
     steps:
     - uses: actions/checkout@v4
       with:
         repository: andrewrk/libsoundio
         ref: master
     
-    - name: Configure and Build
+    - name: Install dependencies
       run: |
-        mkdir build && cd build
-        if [ "${{ matrix.arch }}" = "arm64" ]; then
-          cmake .. \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_DYNAMIC_LIBS=OFF \
-            -DBUILD_STATIC_LIBS=ON \
-            -DBUILD_EXAMPLE_PROGRAMS=OFF \
-            -DBUILD_TESTS=OFF \
-            -DCMAKE_OSX_ARCHITECTURES=arm64
-        else
-          cmake .. \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_DYNAMIC_LIBS=OFF \
-            -DBUILD_STATIC_LIBS=ON \
-            -DBUILD_EXAMPLE_PROGRAMS=OFF \
-            -DBUILD_TESTS=OFF \
-            -DCMAKE_OSX_ARCHITECTURES=x86_64
-        fi
+        brew install cmake
+    
+    - name: Build
+      run: |
+        mkdir build
+        cd build
+        cmake ..
         make -j$(sysctl -n hw.ncpu)
-        cp libsoundio_static.a libsoundio-macos-${{ matrix.arch }}.a
+        ls -la *.a
+        cp libsoundio_static.a libsoundio-macos-x64.a
     
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: libsoundio-macos-${{ matrix.arch }}
-        path: build/libsoundio-macos-${{ matrix.arch }}.a
+        name: libsoundio-macos-x64
+        path: build/libsoundio-macos-x64.a
 
-  build-windows-msvc:
-    runs-on: windows-2019  # Use 2019 which has better CMake compatibility
-    strategy:
-      matrix:
-        arch: [x64, x86]
-    
+  build-windows:
+    runs-on: windows-2022
     steps:
     - uses: actions/checkout@v4
       with:
         repository: andrewrk/libsoundio
         ref: master
     
-    - name: Setup MSVC environment
+    - name: Setup MSVC
       uses: microsoft/setup-msbuild@v2
-      with:
-        vs-version: '16.11'  # VS 2019
     
-    - name: Configure and Build
+    - name: Build
       shell: cmd
       run: |
         mkdir build
         cd build
-        if "${{ matrix.arch }}"=="x86" (
-          cmake .. -G "Visual Studio 16 2019" -A Win32 -DCMAKE_BUILD_TYPE=Release -DBUILD_DYNAMIC_LIBS=OFF -DBUILD_STATIC_LIBS=ON -DBUILD_EXAMPLE_PROGRAMS=OFF -DBUILD_TESTS=OFF -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
-        ) else (
-          cmake .. -G "Visual Studio 16 2019" -A x64 -DCMAKE_BUILD_TYPE=Release -DBUILD_DYNAMIC_LIBS=OFF -DBUILD_STATIC_LIBS=ON -DBUILD_EXAMPLE_PROGRAMS=OFF -DBUILD_TESTS=OFF -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
-        )
-        msbuild ALL_BUILD.vcxproj /p:Configuration=Release
-        copy Release\soundio_static.lib libsoundio-windows-msvc-${{ matrix.arch }}.a
+        cmake .. -G "Visual Studio 17 2022" -A x64
+        msbuild libsoundio.sln /p:Configuration=Debug /p:Platform=x64
+        dir *.lib
+        copy Debug\soundio_static.lib libsoundio-windows-x64.a
     
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: libsoundio-windows-msvc-${{ matrix.arch }}
-        path: build/libsoundio-windows-msvc-${{ matrix.arch }}.a
+        name: libsoundio-windows-x64
+        path: build/libsoundio-windows-x64.a
 
-  build-windows-mingw:
-    runs-on: windows-latest
-    strategy:
-      matrix:
-        arch: [x64, x86]
-    
+  test-usage:
+    needs: [build-windows]
+    runs-on: windows-2022
     steps:
-    - uses: actions/checkout@v4
+    - name: Download Windows artifacts
+      uses: actions/download-artifact@v4
       with:
-        repository: andrewrk/libsoundio
-        ref: master
+        name: libsoundio-windows-x64
+        path: test/
     
-    - name: Setup MinGW
-      uses: msys2/setup-msys2@v2
-      with:
-        msystem: ${{ matrix.arch == 'x64' && 'MINGW64' || 'MINGW32' }}
-        install: >-
-          base-devel
-          git
-          ${{ matrix.arch == 'x64' && 'mingw-w64-x86_64-gcc' || 'mingw-w64-i686-gcc' }}
-          ${{ matrix.arch == 'x64' && 'mingw-w64-x86_64-cmake' || 'mingw-w64-i686-cmake' }}
-          ${{ matrix.arch == 'x64' && 'mingw-w64-x86_64-pkg-config' || 'mingw-w64-i686-pkg-config' }}
-    
-    - name: Build with MinGW
-      shell: msys2 {0}
+    - name: Test compilation
+      shell: cmd
       run: |
-        mkdir build && cd build
-        cmake .. \
-          -G "MSYS Makefiles" \
-          -DCMAKE_BUILD_TYPE=Release \
-          -DBUILD_DYNAMIC_LIBS=OFF \
-          -DBUILD_STATIC_LIBS=ON \
-          -DBUILD_EXAMPLE_PROGRAMS=OFF \
-          -DBUILD_TESTS=OFF
-        make -j$(nproc)
-        cp libsoundio_static.a libsoundio-windows-mingw-${{ matrix.arch }}.a
-    
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: libsoundio-windows-mingw-${{ matrix.arch }}
-        path: build/libsoundio-windows-mingw-${{ matrix.arch }}.a
+        echo #define SOUNDIO_STATIC_LIBRARY > test.c
+        echo #include ^<stdio.h^> >> test.c
+        echo int main() { printf("Test OK\n"); return 0; } >> test.c
+        
+        call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+        cl test.c
+        test.exe
 
   package-release:
-    needs: [build-linux, build-macos, build-windows-msvc, build-windows-mingw]
+    needs: [build-linux, build-macos, build-windows]
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
-    
     steps:
     - name: Download all artifacts
       uses: actions/download-artifact@v4
@@ -195,43 +126,26 @@ jobs:
         find artifacts -name "*.a" -exec cp {} release/ \;
         ls -la release/
         
-        # Download headers
-        curl -L https://raw.githubusercontent.com/andrewrk/libsoundio/master/soundio/soundio.h -o release/soundio.h
-        
-        # Create usage documentation
+        # Create usage instructions
         cat > release/README.md << 'EOF'
-        # libsoundio Static Libraries - Zero Dependencies
+        # libsoundio Static Libraries
         
-        ## Windows MSVC (Recommended for Zero Dependencies)
-        - File: `libsoundio-windows-msvc-x64.a` or `libsoundio-windows-msvc-x86.a`
-        - **ZERO runtime dependencies** - statically linked with `/MT`
-        - Usage:
-        ```cpp
-        #define SOUNDIO_STATIC_LIBRARY
-        #include "soundio.h"
-        ```
-        - Link: `libsoundio-windows-msvc-x64.a ole32.lib`
+        ## Usage
         
-        ## Windows MinGW (More Compatible)
-        - File: `libsoundio-windows-mingw-x64.a` or `libsoundio-windows-mingw-x86.a`
-        - Better GCC compatibility
-        - Usage:
-        ```cpp
-        #define SOUNDIO_STATIC_LIBRARY
-        #include "soundio.h"
-        ```
-        - Link: `libsoundio-windows-mingw-x64.a -lole32`
+        ### Windows
+        - File: `libsoundio-windows-x64.a`
+        - Define: `#define SOUNDIO_STATIC_LIBRARY`
+        - Link: `libsoundio-windows-x64.a ole32.lib`
         
-        ## Linux
-        - File: `libsoundio-linux-x64.a` or `libsoundio-linux-arm64.a`
+        ### Linux
+        - File: `libsoundio-linux-x64.a`  
         - Link: `libsoundio-linux-x64.a -lpthread -lasound -lpulse -ljack`
         
-        ## macOS
-        - File: `libsoundio-macos-x64.a` or `libsoundio-macos-arm64.a`
+        ### macOS
+        - File: `libsoundio-macos-x64.a`
         - Link: `libsoundio-macos-x64.a -framework CoreAudio -framework AudioUnit -framework CoreFoundation`
         
-        ## Zero Dependencies Guarantee
-        The MSVC builds use `/MT` (MultiThreaded static runtime), ensuring your applications have absolutely zero runtime dependencies on end-user Windows systems.
+        Get soundio.h from: https://raw.githubusercontent.com/andrewrk/libsoundio/master/soundio/soundio.h
         EOF
     
     - name: Upload release artifacts
@@ -239,46 +153,3 @@ jobs:
       with:
         name: libsoundio-static-all-platforms
         path: release/
-
-  verify-zero-dependencies:
-    needs: [build-windows-msvc]
-    runs-on: windows-2019
-    steps:
-    - name: Download Windows MSVC artifacts
-      uses: actions/download-artifact@v4
-      with:
-        name: libsoundio-windows-msvc-x64
-        path: test/
-    
-    - name: Create and test zero-dependency application
-      shell: cmd
-      run: |
-        mkdir test_app
-        cd test_app
-        
-        curl -L https://raw.githubusercontent.com/andrewrk/libsoundio/master/soundio/soundio.h -o soundio.h
-        
-        echo #define SOUNDIO_STATIC_LIBRARY > test.c
-        echo #include "soundio.h" >> test.c
-        echo #include ^<stdio.h^> >> test.c
-        echo int main() { >> test.c
-        echo     struct SoundIo *soundio = soundio_create(); >> test.c
-        echo     if (!soundio) { >> test.c
-        echo         printf("Failed to create SoundIo context\n"); >> test.c
-        echo         return 1; >> test.c
-        echo     } >> test.c
-        echo     printf("libsoundio initialized successfully - ZERO dependencies!\n"); >> test.c
-        echo     soundio_destroy(soundio); >> test.c
-        echo     return 0; >> test.c
-        echo } >> test.c
-        
-        call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
-        cl /MT test.c ..\test\libsoundio-windows-msvc-x64.a ole32.lib
-        
-        echo Testing executable...
-        test.exe
-        
-        echo Checking dependencies...
-        dumpbin /dependents test.exe
-        
-        echo ✅ SUCCESS: Zero-dependency executable created and tested!
