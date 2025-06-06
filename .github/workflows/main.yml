@@ -1,4 +1,4 @@
-name: Build libsoundio Static Libraries
+name: Build libsoundio Static Libraries for Windows
 
 on:
   push:
@@ -8,148 +8,164 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-linux:
-    runs-on: ubuntu-latest
+  build-windows-static:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        arch: [x64, x86]
+        compiler: [msvc, mingw]
+        include:
+          - arch: x64
+            cmake_arch: x64
+            mingw_arch: x86_64
+          - arch: x86
+            cmake_arch: Win32
+            mingw_arch: i686
+
     steps:
-    - uses: actions/checkout@v4
+    - name: Checkout libsoundio
+      uses: actions/checkout@v4
       with:
         repository: andrewrk/libsoundio
         ref: master
-    
-    - name: Install dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y cmake build-essential libasound2-dev libpulse-dev libjack-jackd2-dev
-    
-    - name: Build
+
+    - name: Set up MSVC
+      if: matrix.compiler == 'msvc'
+      uses: microsoft/setup-msbuild@v1.3
+
+    - name: Set up MinGW
+      if: matrix.compiler == 'mingw'
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: MINGW64
+        update: true
+        install: >-
+          mingw-w64-${{ matrix.mingw_arch }}-gcc
+          mingw-w64-${{ matrix.mingw_arch }}-cmake
+          mingw-w64-${{ matrix.mingw_arch }}-make
+
+    - name: Configure CMake (MSVC)
+      if: matrix.compiler == 'msvc'
       run: |
         mkdir build
         cd build
-        cmake ..
-        make -j$(nproc)
-        ls -la *.a
-        cp libsoundio_static.a libsoundio-linux-x64.a
-    
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: libsoundio-linux-x64
-        path: build/libsoundio-linux-x64.a
+        cmake .. -G "Visual Studio 17 2022" -A ${{ matrix.cmake_arch }} `
+          -DCMAKE_BUILD_TYPE=Release `
+          -DBUILD_STATIC_LIBS=ON `
+          -DBUILD_SHARED_LIBS=OFF `
+          -DBUILD_EXAMPLE_PROGRAMS=OFF `
+          -DBUILD_TESTS=OFF `
+          -DENABLE_WASAPI=ON `
+          -DSOUNDIO_STATIC_LIBNAME=soundio_static
 
-  build-macos:
-    runs-on: macos-latest
-    steps:
-    - uses: actions/checkout@v4
-      with:
-        repository: andrewrk/libsoundio
-        ref: master
-    
-    - name: Install dependencies
-      run: |
-        brew install cmake
-    
-    - name: Build
+    - name: Configure CMake (MinGW)
+      if: matrix.compiler == 'mingw'
+      shell: msys2 {0}
       run: |
         mkdir build
         cd build
-        cmake ..
-        make -j$(sysctl -n hw.ncpu)
-        ls -la *.a
-        cp libsoundio_static.a libsoundio-macos-x64.a
-    
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: libsoundio-macos-x64
-        path: build/libsoundio-macos-x64.a
+        cmake .. -G "MinGW Makefiles" \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DBUILD_STATIC_LIBS=ON \
+          -DBUILD_SHARED_LIBS=OFF \
+          -DBUILD_EXAMPLE_PROGRAMS=OFF \
+          -DBUILD_TESTS=OFF \
+          -DENABLE_WASAPI=ON \
+          -DSOUNDIO_STATIC_LIBNAME=soundio_static \
+          -DCMAKE_C_FLAGS="-DSOUNDIO_STATIC_LIBRARY"
 
-  build-windows:
-    runs-on: windows-2022
-    steps:
-    - uses: actions/checkout@v4
-      with:
-        repository: andrewrk/libsoundio
-        ref: master
-    
-    - name: Setup MSVC
-      uses: microsoft/setup-msbuild@v2
-    
-    - name: Build
-      shell: cmd
+    - name: Build (MSVC)
+      if: matrix.compiler == 'msvc'
       run: |
-        mkdir build
         cd build
-        cmake .. -G "Visual Studio 17 2022" -A x64
-        msbuild libsoundio.sln /p:Configuration=Debug /p:Platform=x64
-        dir *.lib
-        copy Debug\soundio_static.lib libsoundio-windows-x64.a
-    
+        cmake --build . --config Release --target soundio_static
+
+    - name: Build (MinGW)
+      if: matrix.compiler == 'mingw'
+      shell: msys2 {0}
+      run: |
+        cd build
+        make soundio_static -j$(nproc)
+
+    - name: Prepare artifacts (MSVC)
+      if: matrix.compiler == 'msvc'
+      run: |
+        mkdir artifacts
+        # Copy static library
+        copy build\Release\soundio_static.lib artifacts\libsoundio_static_${{ matrix.arch }}_msvc.lib
+        # Copy headers
+        mkdir artifacts\include
+        copy soundio\*.h artifacts\include\
+
+    - name: Prepare artifacts (MinGW)
+      if: matrix.compiler == 'mingw'
+      shell: msys2 {0}
+      run: |
+        mkdir artifacts
+        # Copy static library
+        cp build/libsoundio_static.a artifacts/libsoundio_static_${{ matrix.arch }}_mingw.a
+        # Copy headers
+        mkdir artifacts/include
+        cp soundio/*.h artifacts/include/
+
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: libsoundio-windows-x64
-        path: build/libsoundio-windows-x64.a
+        name: libsoundio-static-${{ matrix.compiler }}-${{ matrix.arch }}
+        path: artifacts/
 
-  test-usage:
-    needs: [build-windows]
-    runs-on: windows-2022
-    steps:
-    - name: Download Windows artifacts
-      uses: actions/download-artifact@v4
-      with:
-        name: libsoundio-windows-x64
-        path: test/
-    
-    - name: Test compilation
-      shell: cmd
-      run: |
-        echo #define SOUNDIO_STATIC_LIBRARY > test.c
-        echo #include ^<stdio.h^> >> test.c
-        echo int main() { printf("Test OK\n"); return 0; } >> test.c
-        
-        call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
-        cl test.c
-        test.exe
-
-  package-release:
-    needs: [build-linux, build-macos, build-windows]
+  combine-artifacts:
+    needs: build-windows-static
     runs-on: ubuntu-latest
     steps:
     - name: Download all artifacts
       uses: actions/download-artifact@v4
       with:
-        path: artifacts
-    
-    - name: Create release package
+        path: all-artifacts
+
+    - name: Combine artifacts
       run: |
-        mkdir release
-        find artifacts -name "*.a" -exec cp {} release/ \;
-        ls -la release/
+        mkdir -p combined/lib
+        mkdir -p combined/include
         
-        # Create usage instructions
-        cat > release/README.md << 'EOF'
-        # libsoundio Static Libraries
+        # Copy all static libraries
+        find all-artifacts -name "*.lib" -exec cp {} combined/lib/ \;
+        find all-artifacts -name "*.a" -exec cp {} combined/lib/ \;
         
-        ## Usage
+        # Copy headers (from any artifact, they're the same)
+        find all-artifacts -name "*.h" -exec cp {} combined/include/ \; | head -10
         
-        ### Windows
-        - File: `libsoundio-windows-x64.a`
-        - Define: `#define SOUNDIO_STATIC_LIBRARY`
-        - Link: `libsoundio-windows-x64.a ole32.lib`
+        # Create a simple README
+        cat > combined/README.md << 'EOF'
+        # libsoundio Static Libraries for Windows
         
-        ### Linux
-        - File: `libsoundio-linux-x64.a`  
-        - Link: `libsoundio-linux-x64.a -lpthread -lasound -lpulse -ljack`
+        This package contains static libraries for libsoundio compiled for Windows.
         
-        ### macOS
-        - File: `libsoundio-macos-x64.a`
-        - Link: `libsoundio-macos-x64.a -framework CoreAudio -framework AudioUnit -framework CoreFoundation`
+        ## Files included:
+        - `lib/libsoundio_static_x64_msvc.lib` - 64-bit MSVC static library
+        - `lib/libsoundio_static_x86_msvc.lib` - 32-bit MSVC static library  
+        - `lib/libsoundio_static_x64_mingw.a` - 64-bit MinGW static library
+        - `lib/libsoundio_static_x86_mingw.a` - 32-bit MinGW static library
+        - `include/` - Header files
         
-        Get soundio.h from: https://raw.githubusercontent.com/andrewrk/libsoundio/master/soundio/soundio.h
+        ## Usage:
+        1. Link against the appropriate static library for your compiler and architecture
+        2. Define `SOUNDIO_STATIC_LIBRARY` when compiling your application
+        3. Include the headers from the `include/` directory
+        4. On Windows, no additional libraries are needed as WASAPI is built into Windows
+        
+        ## Example compilation:
+        ```bash
+        # With MSVC
+        cl /DSOUNDIO_STATIC_LIBRARY your_app.c libsoundio_static_x64_msvc.lib
+        
+        # With MinGW
+        gcc -DSOUNDIO_STATIC_LIBRARY your_app.c -L. -lsoundio_static_x64_mingw
+        ```
         EOF
-    
-    - name: Upload release artifacts
+
+    - name: Upload combined artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: libsoundio-static-all-platforms
-        path: release/
+        name: libsoundio-static-windows-all
+        path: combined/
