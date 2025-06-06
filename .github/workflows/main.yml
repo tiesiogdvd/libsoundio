@@ -36,7 +36,7 @@ jobs:
       if: matrix.compiler == 'msvc'
       uses: microsoft/setup-msbuild@v1.3
 
-    - name: Patch CMakeLists.txt for MSVC
+    - name: Patch for MSVC
       if: matrix.compiler == 'msvc'
       run: |
         # Fix CMake version and add C11 support
@@ -70,11 +70,9 @@ jobs:
       if: matrix.compiler == 'msvc'
       run: |
         mkdir artifacts
-        # Find and copy static library
         Get-ChildItem -Recurse build/ -Name "*soundio_static*.lib" | ForEach-Object {
           copy "build\$_" "artifacts\libsoundio_static_${{ matrix.arch }}_msvc.lib"
         }
-        # Copy headers
         mkdir artifacts\include
         copy soundio\*.h artifacts\include\
 
@@ -91,13 +89,66 @@ jobs:
           ${{ matrix.msys_prefix }}-cmake
           ${{ matrix.msys_prefix }}-ninja
 
-    - name: Patch CMakeLists.txt for MinGW
+    - name: Patch for MinGW WASAPI compatibility
       if: matrix.compiler == 'mingw'
       shell: msys2 {0}
       run: |
         # Fix CMake version and add C11 support  
         sed -i 's/cmake_minimum_required(VERSION 2\.8\.5)/cmake_minimum_required(VERSION 3.10)/' CMakeLists.txt
         sed -i '/project(libsoundio C)/a set(CMAKE_C_STANDARD 11)\nset(CMAKE_C_STANDARD_REQUIRED ON)' CMakeLists.txt
+        
+        # Fix WASAPI GUID redefinition issues for MinGW
+        cat > wasapi_fix.patch << 'EOF'
+        --- src/wasapi.c.orig
+        +++ src/wasapi.c
+        @@ -45,6 +45,7 @@
+         #include "wasapi.h"
+         #include "soundio_private.h"
+         
+        +#ifndef IID_IAudioSessionEvents
+         static const IID   IID_IAudioSessionEvents   = {
+             //MIDL_INTERFACE("24918ACC-64B3-37C1-8CA9-74A66E9957A8")
+             0x24918acc, 0x64b3, 0x37c1, {0x8c, 0xa9, 0x74, 0xa6, 0x6e, 0x99, 0x57, 0xa8}
+        @@ -54,14 +55,17 @@
+             //MIDL_INTERFACE("1be09788-6894-4089-8586-9a2a6c265ac5")
+             0x1be09788, 0x6894, 0x4089, {0x85, 0x86, 0x9a, 0x2a, 0x6c, 0x26, 0x5a, 0xc5}
+         };
+        +#endif
+        +#ifndef IID_IAudioClockAdjustment
+         static const IID IID_IAudioClockAdjustment = {
+             //MIDL_INTERFACE("f6e4c0a0-46d9-4fb8-be21-57a3ef2b626c")
+             0xf6e4c0a0, 0x46d9, 0x4fb8, {0xbe, 0x21, 0x57, 0xa3, 0xef, 0x2b, 0x62, 0x6c}
+         };
+        +#endif
+        +#ifndef IID_IAudioCaptureClient
+         static const IID IID_IAudioCaptureClient = {
+             //MIDL_INTERFACE("C8ADBD64-E71E-48a0-A4DE-185C395CD317")
+             0xc8adbd64, 0xe71e, 0x48a0, {0xa4, 0xde, 0x18, 0x5c, 0x39, 0x5c, 0xd3, 0x17}
+         };
+        +#endif
+        +#ifndef IID_ISimpleAudioVolume
+         static const IID IID_ISimpleAudioVolume = {
+             //MIDL_INTERFACE("87CE5498-68D6-44E5-9215-6DA47EF883D8")
+             0x87ce5498, 0x68d6, 0x44e5, {0x92, 0x15, 0x6d, 0xa4, 0x7e, 0xf8, 0x83, 0xd8}
+         };
+        +#endif
+        EOF
+        
+        # Apply the patch by manually editing the file
+        cp src/wasapi.c src/wasapi.c.backup
+        
+        # Add conditional compilation guards around GUID definitions
+        sed -i '/^static const IID   IID_IAudioSessionEvents/i #ifndef IID_IAudioSessionEvents' src/wasapi.c
+        sed -i '/0x24918acc, 0x64b3, 0x37c1, {0x8c, 0xa9, 0x74, 0xa6, 0x6e, 0x99, 0x57, 0xa8}/a };'\$'\n''#endif' src/wasapi.c
+        
+        sed -i '/^static const IID IID_IAudioClockAdjustment/i #ifndef IID_IAudioClockAdjustment' src/wasapi.c
+        sed -i '/0xf6e4c0a0, 0x46d9, 0x4fb8, {0xbe, 0x21, 0x57, 0xa3, 0xef, 0x2b, 0x62, 0x6c}/a };'\$'\n''#endif' src/wasapi.c
+        
+        sed -i '/^static const IID IID_IAudioCaptureClient/i #ifndef IID_IAudioCaptureClient' src/wasapi.c
+        sed -i '/0xc8adbd64, 0xe71e, 0x48a0, {0xa4, 0xde, 0x18, 0x5c, 0x39, 0x5c, 0xd3, 0x17}/a };'\$'\n''#endif' src/wasapi.c
+        
+        sed -i '/^static const IID IID_ISimpleAudioVolume/i #ifndef IID_ISimpleAudioVolume' src/wasapi.c
+        sed -i '/0x87ce5498, 0x68d6, 0x44e5, {0x92, 0x15, 0x6d, 0xa4, 0x7e, 0xf8, 0x83, 0xd8}/a };'\$'\n''#endif' src/wasapi.c
 
     - name: Configure CMake (MinGW)
       if: matrix.compiler == 'mingw'
@@ -127,9 +178,7 @@ jobs:
       shell: msys2 {0}
       run: |
         mkdir artifacts
-        # Find and copy static library
         find build/ -name "*soundio_static*.a" | head -1 | xargs -I {} cp {} artifacts/libsoundio_static_${{ matrix.arch }}_mingw.a
-        # Copy headers
         mkdir artifacts/include
         cp soundio/*.h artifacts/include/
 
@@ -154,16 +203,12 @@ jobs:
       run: |
         mkdir -p combined/lib combined/include
         
-        # Copy libraries and headers
         find all-artifacts -name "*.lib" -exec cp {} combined/lib/ \; 2>/dev/null || true
         find all-artifacts -name "*.a" -exec cp {} combined/lib/ \; 2>/dev/null || true
         find all-artifacts -name "*.h" -exec cp {} combined/include/ \; 2>/dev/null || true
         
-        # Create comprehensive documentation
         cat > combined/README.md << 'EOF'
         # libsoundio Static Libraries for Windows
-        
-        Static libraries for libsoundio 2.0.0 compiled for Windows with C11 support.
         
         ## Files:
         - `lib/libsoundio_static_x64_msvc.lib` - 64-bit MSVC library
@@ -172,9 +217,7 @@ jobs:
         - `lib/libsoundio_static_x86_mingw.a` - 32-bit MinGW library
         - `include/soundio.h`, `include/endian.h` - Headers
         
-        ## Usage Requirements:
-        
-        ### 1. Define SOUNDIO_STATIC_LIBRARY (MANDATORY)
+        ## Usage (CRITICAL - Define SOUNDIO_STATIC_LIBRARY):
         ```bash
         # MSVC
         cl /std:c11 /DSOUNDIO_STATIC_LIBRARY your_app.c libsoundio_static_x64_msvc.lib
@@ -183,57 +226,33 @@ jobs:
         gcc -std=c11 -DSOUNDIO_STATIC_LIBRARY your_app.c -L. -lsoundio_static_x64_mingw
         ```
         
-        ### 2. CMake Integration:
+        ## CMake:
         ```cmake
         set(CMAKE_C_STANDARD 11)
-        set(CMAKE_C_STANDARD_REQUIRED ON)
-        
-        target_include_directories(your_app PRIVATE path/to/include)
         target_compile_definitions(your_app PRIVATE SOUNDIO_STATIC_LIBRARY)
-        
-        if(MSVC)
-            target_link_libraries(your_app libsoundio_static_x64_msvc.lib)
-        else()
-            target_link_libraries(your_app libsoundio_static_x64_mingw.a)
-        endif()
+        target_link_libraries(your_app libsoundio_static_x64_msvc.lib)  # or .a for MinGW
         ```
         
-        ### 3. Dependencies:
+        ## Dependencies: 
         - **None** - Uses Windows WASAPI (built into Windows)
-        - Requires C11 compiler support
+        - Requires C11 compiler
         
-        ## Troubleshooting:
-        - **"C atomics require C11"**: Add `/std:c11` (MSVC) or `-std=c11` (GCC)
-        - **"undefined symbol __imp_soundio_*"**: Define `SOUNDIO_STATIC_LIBRARY`
-        - **Linker errors**: Ensure correct architecture (x86/x64) matches your app
-        
-        ## Test Example:
+        ## Test:
         ```c
         #include "soundio.h"
         #include <stdio.h>
         
         int main() {
             struct SoundIo *soundio = soundio_create();
-            if (!soundio) return 1;
-            
-            if (soundio_connect(soundio)) {
-                soundio_destroy(soundio);
-                return 1;
-            }
-            
+            if (!soundio || soundio_connect(soundio)) return 1;
             soundio_flush_events(soundio);
             printf("Success! Devices: %d out, %d in\n", 
                    soundio_output_device_count(soundio),
                    soundio_input_device_count(soundio));
-            
             soundio_destroy(soundio);
             return 0;
         }
         ```
-        
-        Compile test with:
-        - MSVC: `cl /std:c11 /DSOUNDIO_STATIC_LIBRARY test.c libsoundio_static_x64_msvc.lib`
-        - MinGW: `gcc -std=c11 -DSOUNDIO_STATIC_LIBRARY test.c -L. -lsoundio_static_x64_mingw`
         EOF
 
     - name: Upload combined artifacts
