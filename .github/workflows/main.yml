@@ -45,15 +45,21 @@ jobs:
         install: >-
           ${{ matrix.mingw_package }}-gcc
           ${{ matrix.mingw_package }}-cmake
-          ${{ matrix.mingw_package }}-make
+          make
 
-    # Fix CMake compatibility issue by patching CMakeLists.txt
-    - name: Patch CMakeLists.txt for modern CMake
+    # Fix CMake compatibility and add C11 support
+    - name: Patch CMakeLists.txt for modern CMake and C11
       run: |
         # Backup original
         copy CMakeLists.txt CMakeLists.txt.bak
-        # Replace cmake_minimum_required(VERSION 2.8.5) with a compatible version
-        (Get-Content CMakeLists.txt) -replace 'cmake_minimum_required\(VERSION 2\.8\.5\)', 'cmake_minimum_required(VERSION 3.5)' | Set-Content CMakeLists.txt
+        # Read the file and apply multiple fixes
+        $content = Get-Content CMakeLists.txt -Raw
+        # Fix CMake version
+        $content = $content -replace 'cmake_minimum_required\(VERSION 2\.8\.5\)', 'cmake_minimum_required(VERSION 3.5)'
+        # Add C11 standard after project declaration
+        $content = $content -replace '(project\(libsoundio C\))', "`$1`nset(CMAKE_C_STANDARD 11)`nset(CMAKE_C_STANDARD_REQUIRED ON)"
+        # Write back
+        Set-Content CMakeLists.txt $content
 
     - name: Configure CMake (MSVC)
       if: matrix.compiler == 'msvc'
@@ -67,6 +73,8 @@ jobs:
           -DBUILD_EXAMPLE_PROGRAMS=OFF `
           -DBUILD_TESTS=OFF `
           -DENABLE_WASAPI=ON `
+          -DCMAKE_C_STANDARD=11 `
+          -DCMAKE_C_STANDARD_REQUIRED=ON `
           -DCMAKE_POLICY_DEFAULT_CMP0025=NEW `
           -DCMAKE_POLICY_DEFAULT_CMP0042=NEW `
           -DCMAKE_POLICY_DEFAULT_CMP0046=NEW
@@ -84,6 +92,8 @@ jobs:
           -DBUILD_EXAMPLE_PROGRAMS=OFF \
           -DBUILD_TESTS=OFF \
           -DENABLE_WASAPI=ON \
+          -DCMAKE_C_STANDARD=11 \
+          -DCMAKE_C_STANDARD_REQUIRED=ON \
           -DCMAKE_POLICY_DEFAULT_CMP0025=NEW \
           -DCMAKE_POLICY_DEFAULT_CMP0042=NEW \
           -DCMAKE_POLICY_DEFAULT_CMP0046=NEW
@@ -208,15 +218,22 @@ jobs:
         **THIS IS MANDATORY** - You must define `SOUNDIO_STATIC_LIBRARY` when compiling your application:
         
         ```bash
-        # With MSVC
-        cl /DSOUNDIO_STATIC_LIBRARY your_app.c libsoundio_static_x64_msvc.lib
+        # With MSVC (requires /std:c11 or newer)
+        cl /std:c11 /DSOUNDIO_STATIC_LIBRARY your_app.c libsoundio_static_x64_msvc.lib
         
         # With MinGW/GCC
-        gcc -DSOUNDIO_STATIC_LIBRARY your_app.c -L. -lsoundio_static_x64_mingw
+        gcc -std=c11 -DSOUNDIO_STATIC_LIBRARY your_app.c -L. -lsoundio_static_x64_mingw
         ```
         
-        ### 2. CMake Integration:
+        ### 2. C11 Standard Required
+        libsoundio uses C11 atomics, so you must compile with C11 or later standard.
+        
+        ### 3. CMake Integration:
         ```cmake
+        # Set C11 standard
+        set(CMAKE_C_STANDARD 11)
+        set(CMAKE_C_STANDARD_REQUIRED ON)
+        
         # Add headers
         target_include_directories(your_app PRIVATE path/to/libsoundio/include)
         
@@ -231,25 +248,27 @@ jobs:
         endif()
         ```
         
-        ### 3. No External Dependencies
+        ### 4. No External Dependencies
         - libsoundio uses WASAPI backend on Windows (built into Windows)
         - No additional audio libraries required
         - Choose correct architecture (x86/x64) matching your application
         
-        ### 4. Troubleshooting
-        If you get linker errors like "undefined symbol: __imp_soundio_*", you forgot to define SOUNDIO_STATIC_LIBRARY.
+        ### 5. Troubleshooting
+        - If you get "C atomics require C11 or later": Add `/std:c11` (MSVC) or `-std=c11` (GCC)
+        - If you get "undefined symbol: __imp_soundio_*": Define SOUNDIO_STATIC_LIBRARY
         
         ## libsoundio Information:
         - Version: 2.0.0
         - License: MIT
         - Repository: https://github.com/andrewrk/libsoundio
         - Audio Backend: WASAPI (Windows Audio Session API)
+        - Requires: C11 standard or later
         EOF
 
-        # Create a simple example
+        # Create a simple example with C11
         cat > combined/example.c << 'EOF'
         // Simple libsoundio example
-        // Compile with: cl /DSOUNDIO_STATIC_LIBRARY example.c libsoundio_static_x64_msvc.lib
+        // Compile with: cl /std:c11 /DSOUNDIO_STATIC_LIBRARY example.c libsoundio_static_x64_msvc.lib
         
         #include "soundio.h"
         #include <stdio.h>
