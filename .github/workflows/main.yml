@@ -21,6 +21,7 @@ jobs:
           - arch: x86
             cmake_arch: Win32
             mingw_arch: i686
+      fail-fast: false  # Don't cancel other jobs if one fails
 
     steps:
     - name: Checkout libsoundio
@@ -52,11 +53,10 @@ jobs:
         cmake .. -G "Visual Studio 17 2022" -A ${{ matrix.cmake_arch }} `
           -DCMAKE_BUILD_TYPE=Release `
           -DBUILD_STATIC_LIBS=ON `
-          -DBUILD_SHARED_LIBS=OFF `
+          -DBUILD_DYNAMIC_LIBS=OFF `
           -DBUILD_EXAMPLE_PROGRAMS=OFF `
           -DBUILD_TESTS=OFF `
-          -DENABLE_WASAPI=ON `
-          -DSOUNDIO_STATIC_LIBNAME=soundio_static
+          -DENABLE_WASAPI=ON
 
     - name: Configure CMake (MinGW)
       if: matrix.compiler == 'mingw'
@@ -67,32 +67,30 @@ jobs:
         cmake .. -G "MinGW Makefiles" \
           -DCMAKE_BUILD_TYPE=Release \
           -DBUILD_STATIC_LIBS=ON \
-          -DBUILD_SHARED_LIBS=OFF \
+          -DBUILD_DYNAMIC_LIBS=OFF \
           -DBUILD_EXAMPLE_PROGRAMS=OFF \
           -DBUILD_TESTS=OFF \
-          -DENABLE_WASAPI=ON \
-          -DSOUNDIO_STATIC_LIBNAME=soundio_static \
-          -DCMAKE_C_FLAGS="-DSOUNDIO_STATIC_LIBRARY"
+          -DENABLE_WASAPI=ON
 
     - name: Build (MSVC)
       if: matrix.compiler == 'msvc'
       run: |
         cd build
-        cmake --build . --config Release --target soundio_static
+        cmake --build . --config Release --target libsoundio_static
 
     - name: Build (MinGW)
       if: matrix.compiler == 'mingw'
       shell: msys2 {0}
       run: |
         cd build
-        make soundio_static -j$(nproc)
+        make libsoundio_static -j$(nproc)
 
     - name: Prepare artifacts (MSVC)
       if: matrix.compiler == 'msvc'
       run: |
         mkdir artifacts
         # Copy static library
-        copy build\Release\soundio_static.lib artifacts\libsoundio_static_${{ matrix.arch }}_msvc.lib
+        copy build\Release\libsoundio_static.lib artifacts\libsoundio_static_${{ matrix.arch }}_msvc.lib
         # Copy headers
         mkdir artifacts\include
         copy soundio\*.h artifacts\include\
@@ -102,8 +100,16 @@ jobs:
       shell: msys2 {0}
       run: |
         mkdir artifacts
-        # Copy static library
-        cp build/libsoundio_static.a artifacts/libsoundio_static_${{ matrix.arch }}_mingw.a
+        # Copy static library (check both possible locations)
+        if [ -f build/liblibsoundio_static.a ]; then
+          cp build/liblibsoundio_static.a artifacts/libsoundio_static_${{ matrix.arch }}_mingw.a
+        elif [ -f build/libsoundio_static.a ]; then
+          cp build/libsoundio_static.a artifacts/libsoundio_static_${{ matrix.arch }}_mingw.a
+        else
+          echo "Static library not found!"
+          ls -la build/
+          exit 1
+        fi
         # Copy headers
         mkdir artifacts/include
         cp soundio/*.h artifacts/include/
@@ -117,11 +123,18 @@ jobs:
   combine-artifacts:
     needs: build-windows-static
     runs-on: ubuntu-latest
+    if: always() && (needs.build-windows-static.result == 'success' || needs.build-windows-static.result == 'failure')
+    
     steps:
     - name: Download all artifacts
       uses: actions/download-artifact@v4
       with:
         path: all-artifacts
+
+    - name: List downloaded artifacts
+      run: |
+        echo "Downloaded artifacts:"
+        find all-artifacts -type f -name "*" | sort
 
     - name: Combine artifacts
       run: |
@@ -129,13 +142,17 @@ jobs:
         mkdir -p combined/include
         
         # Copy all static libraries
-        find all-artifacts -name "*.lib" -exec cp {} combined/lib/ \;
-        find all-artifacts -name "*.a" -exec cp {} combined/lib/ \;
+        find all-artifacts -name "*.lib" -exec cp {} combined/lib/ \; 2>/dev/null || true
+        find all-artifacts -name "*.a" -exec cp {} combined/lib/ \; 2>/dev/null || true
         
         # Copy headers (from any artifact, they're the same)
-        find all-artifacts -name "*.h" -exec cp {} combined/include/ \; | head -10
+        find all-artifacts -name "*.h" -exec cp {} combined/include/ \; 2>/dev/null || true
         
-        # Create a simple README
+        # List what we have
+        echo "Combined artifacts:"
+        find combined -type f | sort
+        
+        # Create a comprehensive README
         cat > combined/README.md << 'EOF'
         # libsoundio Static Libraries for Windows
         
@@ -149,8 +166,8 @@ jobs:
         - `include/` - Header files
         
         ## Usage:
-        1. Link against the appropriate static library for your compiler and architecture
-        2. Define `SOUNDIO_STATIC_LIBRARY` when compiling your application
+        1. **Define SOUNDIO_STATIC_LIBRARY**: This is crucial for static linking
+        2. Link against the appropriate static library for your compiler and architecture
         3. Include the headers from the `include/` directory
         4. On Windows, no additional libraries are needed as WASAPI is built into Windows
         
@@ -162,6 +179,28 @@ jobs:
         # With MinGW
         gcc -DSOUNDIO_STATIC_LIBRARY your_app.c -L. -lsoundio_static_x64_mingw
         ```
+        
+        ## CMake Example:
+        ```cmake
+        # Add libsoundio headers
+        target_include_directories(your_app PRIVATE path/to/libsoundio/include)
+        
+        # Define static library usage
+        target_compile_definitions(your_app PRIVATE SOUNDIO_STATIC_LIBRARY)
+        
+        # Link static library
+        if(MSVC)
+            target_link_libraries(your_app path/to/libsoundio_static_x64_msvc.lib)
+        else()
+            target_link_libraries(your_app path/to/libsoundio_static_x64_mingw.a)
+        endif()
+        ```
+        
+        ## Important Notes:
+        - **Always define SOUNDIO_STATIC_LIBRARY** when using static libraries
+        - libsoundio uses WASAPI backend on Windows (built into Windows)
+        - No external audio library dependencies required
+        - Choose the correct architecture (x86/x64) for your application
         EOF
 
     - name: Upload combined artifacts
