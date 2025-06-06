@@ -18,10 +18,12 @@ jobs:
           - arch: x64
             cmake_arch: x64
             mingw_arch: x86_64
+            mingw_package: mingw-w64-x86_64
           - arch: x86
             cmake_arch: Win32
             mingw_arch: i686
-      fail-fast: false  # Don't cancel other jobs if one fails
+            mingw_package: mingw-w64-i686
+      fail-fast: false
 
     steps:
     - name: Checkout libsoundio
@@ -41,9 +43,17 @@ jobs:
         msystem: MINGW64
         update: true
         install: >-
-          mingw-w64-${{ matrix.mingw_arch }}-gcc
-          mingw-w64-${{ matrix.mingw_arch }}-cmake
-          mingw-w64-${{ matrix.mingw_arch }}-make
+          ${{ matrix.mingw_package }}-gcc
+          ${{ matrix.mingw_package }}-cmake
+          ${{ matrix.mingw_package }}-make
+
+    # Fix CMake compatibility issue by patching CMakeLists.txt
+    - name: Patch CMakeLists.txt for modern CMake
+      run: |
+        # Backup original
+        copy CMakeLists.txt CMakeLists.txt.bak
+        # Replace cmake_minimum_required(VERSION 2.8.5) with a compatible version
+        (Get-Content CMakeLists.txt) -replace 'cmake_minimum_required\(VERSION 2\.8\.5\)', 'cmake_minimum_required(VERSION 3.5)' | Set-Content CMakeLists.txt
 
     - name: Configure CMake (MSVC)
       if: matrix.compiler == 'msvc'
@@ -56,7 +66,10 @@ jobs:
           -DBUILD_DYNAMIC_LIBS=OFF `
           -DBUILD_EXAMPLE_PROGRAMS=OFF `
           -DBUILD_TESTS=OFF `
-          -DENABLE_WASAPI=ON
+          -DENABLE_WASAPI=ON `
+          -DCMAKE_POLICY_DEFAULT_CMP0025=NEW `
+          -DCMAKE_POLICY_DEFAULT_CMP0042=NEW `
+          -DCMAKE_POLICY_DEFAULT_CMP0046=NEW
 
     - name: Configure CMake (MinGW)
       if: matrix.compiler == 'mingw'
@@ -70,7 +83,10 @@ jobs:
           -DBUILD_DYNAMIC_LIBS=OFF \
           -DBUILD_EXAMPLE_PROGRAMS=OFF \
           -DBUILD_TESTS=OFF \
-          -DENABLE_WASAPI=ON
+          -DENABLE_WASAPI=ON \
+          -DCMAKE_POLICY_DEFAULT_CMP0025=NEW \
+          -DCMAKE_POLICY_DEFAULT_CMP0042=NEW \
+          -DCMAKE_POLICY_DEFAULT_CMP0046=NEW
 
     - name: Build (MSVC)
       if: matrix.compiler == 'msvc'
@@ -85,12 +101,34 @@ jobs:
         cd build
         make libsoundio_static -j$(nproc)
 
+    - name: Verify build output (MSVC)
+      if: matrix.compiler == 'msvc'
+      run: |
+        echo "Checking build output..."
+        Get-ChildItem -Recurse build/ -Name "*.lib"
+        Get-ChildItem -Recurse build/ -Name "*.dll"
+
+    - name: Verify build output (MinGW)
+      if: matrix.compiler == 'mingw'
+      shell: msys2 {0}
+      run: |
+        echo "Checking build output..."
+        find build/ -name "*.a"
+        find build/ -name "*.dll"
+
     - name: Prepare artifacts (MSVC)
       if: matrix.compiler == 'msvc'
       run: |
         mkdir artifacts
-        # Copy static library
-        copy build\Release\libsoundio_static.lib artifacts\libsoundio_static_${{ matrix.arch }}_msvc.lib
+        # Find and copy the static library
+        $staticLib = Get-ChildItem -Recurse build/ -Name "*soundio_static*.lib" | Select-Object -First 1
+        if ($staticLib) {
+          copy "build\$staticLib" "artifacts\libsoundio_static_${{ matrix.arch }}_msvc.lib"
+        } else {
+          echo "Static library not found!"
+          Get-ChildItem -Recurse build/ -Name "*.lib"
+          exit 1
+        }
         # Copy headers
         mkdir artifacts\include
         copy soundio\*.h artifacts\include\
@@ -100,14 +138,13 @@ jobs:
       shell: msys2 {0}
       run: |
         mkdir artifacts
-        # Copy static library (check both possible locations)
-        if [ -f build/liblibsoundio_static.a ]; then
-          cp build/liblibsoundio_static.a artifacts/libsoundio_static_${{ matrix.arch }}_mingw.a
-        elif [ -f build/libsoundio_static.a ]; then
-          cp build/libsoundio_static.a artifacts/libsoundio_static_${{ matrix.arch }}_mingw.a
+        # Find and copy the static library
+        staticLib=$(find build/ -name "*soundio_static*.a" | head -1)
+        if [ -n "$staticLib" ]; then
+          cp "$staticLib" "artifacts/libsoundio_static_${{ matrix.arch }}_mingw.a"
         else
           echo "Static library not found!"
-          ls -la build/
+          find build/ -name "*.a"
           exit 1
         fi
         # Copy headers
@@ -123,7 +160,7 @@ jobs:
   combine-artifacts:
     needs: build-windows-static
     runs-on: ubuntu-latest
-    if: always() && (needs.build-windows-static.result == 'success' || needs.build-windows-static.result == 'failure')
+    if: always()
     
     steps:
     - name: Download all artifacts
@@ -152,7 +189,7 @@ jobs:
         echo "Combined artifacts:"
         find combined -type f | sort
         
-        # Create a comprehensive README
+        # Create comprehensive documentation
         cat > combined/README.md << 'EOF'
         # libsoundio Static Libraries for Windows
         
@@ -163,32 +200,30 @@ jobs:
         - `lib/libsoundio_static_x86_msvc.lib` - 32-bit MSVC static library  
         - `lib/libsoundio_static_x64_mingw.a` - 64-bit MinGW static library
         - `lib/libsoundio_static_x86_mingw.a` - 32-bit MinGW static library
-        - `include/` - Header files
+        - `include/` - Header files (soundio.h, endian.h)
         
-        ## Usage:
-        1. **Define SOUNDIO_STATIC_LIBRARY**: This is crucial for static linking
-        2. Link against the appropriate static library for your compiler and architecture
-        3. Include the headers from the `include/` directory
-        4. On Windows, no additional libraries are needed as WASAPI is built into Windows
+        ## Critical Usage Requirements:
         
-        ## Example compilation:
+        ### 1. Define SOUNDIO_STATIC_LIBRARY
+        **THIS IS MANDATORY** - You must define `SOUNDIO_STATIC_LIBRARY` when compiling your application:
+        
         ```bash
         # With MSVC
         cl /DSOUNDIO_STATIC_LIBRARY your_app.c libsoundio_static_x64_msvc.lib
         
-        # With MinGW
+        # With MinGW/GCC
         gcc -DSOUNDIO_STATIC_LIBRARY your_app.c -L. -lsoundio_static_x64_mingw
         ```
         
-        ## CMake Example:
+        ### 2. CMake Integration:
         ```cmake
-        # Add libsoundio headers
+        # Add headers
         target_include_directories(your_app PRIVATE path/to/libsoundio/include)
         
-        # Define static library usage
+        # REQUIRED: Define static library usage
         target_compile_definitions(your_app PRIVATE SOUNDIO_STATIC_LIBRARY)
         
-        # Link static library
+        # Link appropriate library
         if(MSVC)
             target_link_libraries(your_app path/to/libsoundio_static_x64_msvc.lib)
         else()
@@ -196,11 +231,52 @@ jobs:
         endif()
         ```
         
-        ## Important Notes:
-        - **Always define SOUNDIO_STATIC_LIBRARY** when using static libraries
+        ### 3. No External Dependencies
         - libsoundio uses WASAPI backend on Windows (built into Windows)
-        - No external audio library dependencies required
-        - Choose the correct architecture (x86/x64) for your application
+        - No additional audio libraries required
+        - Choose correct architecture (x86/x64) matching your application
+        
+        ### 4. Troubleshooting
+        If you get linker errors like "undefined symbol: __imp_soundio_*", you forgot to define SOUNDIO_STATIC_LIBRARY.
+        
+        ## libsoundio Information:
+        - Version: 2.0.0
+        - License: MIT
+        - Repository: https://github.com/andrewrk/libsoundio
+        - Audio Backend: WASAPI (Windows Audio Session API)
+        EOF
+
+        # Create a simple example
+        cat > combined/example.c << 'EOF'
+        // Simple libsoundio example
+        // Compile with: cl /DSOUNDIO_STATIC_LIBRARY example.c libsoundio_static_x64_msvc.lib
+        
+        #include "soundio.h"
+        #include <stdio.h>
+        
+        int main() {
+            struct SoundIo *soundio = soundio_create();
+            if (!soundio) {
+                printf("Failed to create SoundIo context\n");
+                return 1;
+            }
+            
+            int err = soundio_connect(soundio);
+            if (err) {
+                printf("Failed to connect: %s\n", soundio_strerror(err));
+                soundio_destroy(soundio);
+                return 1;
+            }
+            
+            soundio_flush_events(soundio);
+            
+            printf("Successfully initialized libsoundio!\n");
+            printf("Output device count: %d\n", soundio_output_device_count(soundio));
+            printf("Input device count: %d\n", soundio_input_device_count(soundio));
+            
+            soundio_destroy(soundio);
+            return 0;
+        }
         EOF
 
     - name: Upload combined artifacts
